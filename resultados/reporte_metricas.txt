@@ -1,0 +1,14 @@
+==================================================
+REPORTE DE MÉTRICAS DEL MODELO
+==================================================
+
+Este archivo contendrá el reporte de métricas del modelo después del entrenamiento.
+
+Será actualizado con:
+- Accuracy
+- Precisión
+- Recall
+- F1-Score
+- Matriz de Confusión
+- Fecha de generación
+
