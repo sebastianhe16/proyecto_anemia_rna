@@ -115,6 +115,38 @@ def cargar_dataset(directorio: str,
     return dataset
 
 
+def listar_imagenes_por_clase(directorio_base: str,
+                              subdirectorios=("Anemic", "Non-anemic"),
+                              extensiones=(".jpg", ".jpeg", ".png", ".bmp")) -> list:
+    """
+    Lista las rutas de las imágenes de las carpetas de clases específicas
+    dentro del dataset CP-Anemic.
+
+    Retorna
+    -------
+    list[tuple[str, str]]
+        Lista de tuplas (nombre_clase, ruta_imagen).
+    """
+    if not os.path.isdir(directorio_base):
+        raise NotADirectoryError(f"El directorio base no existe: {directorio_base}")
+
+    rutas = []
+    for nombre_clase in subdirectorios:
+        carpeta_clase = os.path.join(directorio_base, nombre_clase)
+        if not os.path.isdir(carpeta_clase):
+            print(f"[AVISO] No se encontró la carpeta '{carpeta_clase}'.")
+            continue
+
+        for nombre_archivo in sorted(os.listdir(carpeta_clase)):
+            if nombre_archivo.lower().endswith(extensiones):
+                rutas.append((nombre_clase, os.path.join(carpeta_clase, nombre_archivo)))
+
+    if len(rutas) == 0:
+        print(f"[AVISO] No se encontró ninguna imagen válida en '{directorio_base}'.")
+
+    return rutas
+
+
 # ==============================================================================
 # 2. SEGMENTACIÓN DE LA ROI (CONJUNTIVA) - UMBRALIZACIÓN TRIANGULAR SOBRE a*
 # ==============================================================================
@@ -384,52 +416,54 @@ def procesar_imagen_completa(ruta_imagen: str, area_minima: int = 800) -> dict:
 # 5. VISUALIZACIÓN Y GUARDADO DE RESULTADOS
 # ==============================================================================
 
-def mostrar_y_guardar_resultados(resultados: dict, directorio_salida: str = None):
+def mostrar_y_guardar_resultados(resultados: dict, directorio_salida: str = None,
+                                 mostrar: bool = False):
     """
-    Muestra en pantalla (cv2.imshow) las 3 vistas solicitadas para
-    verificación visual:
-        1. Imagen original.
-        2. ROI segmentada de la conjuntiva (fondo negro).
-        3. Mapa de calor del canal a* de esa ROI.
-
-    Si se indica `directorio_salida`, adicionalmente guarda cada imagen
-    con cv2.imwrite (útil en entornos sin interfaz gráfica, por ejemplo
-    servidores remotos o notebooks sin soporte de ventanas).
+    Muestra las vistas de una imagen si se solicita y, además, guarda los
+    resultados en disco. Las imágenes se organizan en subcarpetas por clase
+    dentro de `directorio_salida`, facilitando su posterior procesamiento.
 
     Parámetros
     ----------
     resultados : dict
         Salida de `procesar_imagen_completa`.
     directorio_salida : str, opcional
-        Carpeta donde guardar las imágenes resultantes en disco.
+        Carpeta raíz donde guardar las imágenes resultantes en disco.
+    mostrar : bool, opcional
+        Si es True, muestra las ventanas de OpenCV para inspección visual.
     """
     nombre = resultados["nombre_archivo"]
-
-    cv2.imshow(f"1. Original - {nombre}", resultados["imagen_original"])
-    cv2.imshow(f"2. ROI Conjuntiva (fondo negro) - {nombre}", resultados["roi_segmentada"])
-    cv2.imshow(f"3. Mapa de calor canal a* - {nombre}", resultados["mapa_calor_a"])
+    clase = resultados.get("clase", "sin_clase")
 
     print(
-        f"[{nombre}] Media canal a* en ROI: {resultados['media_a']:.2f} "
+        f"[{clase}/{nombre}] Media canal a* en ROI: {resultados['media_a']:.2f} "
         f"| Desviación estándar: {resultados['desviacion_a']:.2f}"
     )
 
     if directorio_salida:
-        os.makedirs(directorio_salida, exist_ok=True)
+        carpeta_clase = os.path.join(directorio_salida, clase)
+        os.makedirs(carpeta_clase, exist_ok=True)
         base = os.path.splitext(nombre)[0]
-        cv2.imwrite(os.path.join(directorio_salida, f"{base}_1_original.png"),
+        cv2.imwrite(os.path.join(carpeta_clase, f"{base}_1_original.png"),
                     resultados["imagen_original"])
-        cv2.imwrite(os.path.join(directorio_salida, f"{base}_2_roi.png"),
+        cv2.imwrite(os.path.join(carpeta_clase, f"{base}_2_roi.png"),
                     resultados["roi_segmentada"])
-        cv2.imwrite(os.path.join(directorio_salida, f"{base}_3_mapa_calor_a.png"),
+        cv2.imwrite(os.path.join(carpeta_clase, f"{base}_3_mapa_calor_a.png"),
                     resultados["mapa_calor_a"])
-        cv2.imwrite(os.path.join(directorio_salida, f"{base}_4_mascara.png"),
+        cv2.imwrite(os.path.join(carpeta_clase, f"{base}_4_mascara.png"),
                     resultados["mascara_roi"])
-        print(f"[{nombre}] Imágenes guardadas en: {directorio_salida}")
+        print(f"[{clase}/{nombre}] Imágenes guardadas en: {carpeta_clase}")
 
-    print("Presione cualquier tecla sobre una ventana de imagen para continuar...")
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
+    if mostrar:
+        try:
+            cv2.imshow(f"1. Original - {nombre}", resultados["imagen_original"])
+            cv2.imshow(f"2. ROI Conjuntiva (fondo negro) - {nombre}", resultados["roi_segmentada"])
+            cv2.imshow(f"3. Mapa de calor canal a* - {nombre}", resultados["mapa_calor_a"])
+            print("Presione cualquier tecla sobre una ventana de imagen para continuar...")
+            cv2.waitKey(0)
+            cv2.destroyAllWindows()
+        except cv2.error:
+            print("[AVISO] No se pudo mostrar la ventana de visualización.")
 
 
 # ==============================================================================
@@ -438,53 +472,31 @@ def mostrar_y_guardar_resultados(resultados: dict, directorio_salida: str = None
 
 if __name__ == "__main__":
 
-    # --------------------------------------------------------------------
-    # EJEMPLO A: procesamiento de UNA sola imagen de muestra
-    # --------------------------------------------------------------------
-    RUTA_IMAGEN_MUESTRA = "dataset/Eyes_defy_Anemia/muestra_001.jpg"  # <-- ajustar a su ruta real
+    DIRECTORIO_DATASET = "dataset/CP-Anemic"
     DIRECTORIO_SALIDA = "resultados_fase1"
 
     try:
-        resultados = procesar_imagen_completa(RUTA_IMAGEN_MUESTRA, area_minima=800)
-        mostrar_y_guardar_resultados(resultados, directorio_salida=DIRECTORIO_SALIDA)
-
-    except FileNotFoundError as error:
-        print(f"[ERROR] Archivo no encontrado: {error}")
-    except ValueError as error:
-        print(f"[ERROR] No se pudo procesar la imagen: {error}")
-
-    # --------------------------------------------------------------------
-    # EJEMPLO B: procesamiento por lotes de TODO el dataset
-    # --------------------------------------------------------------------
-    DIRECTORIO_DATASET = "dataset/Eyes_defy_Anemia"
-
-    try:
-        dataset = cargar_dataset(DIRECTORIO_DATASET)
+        rutas_imagenes = listar_imagenes_por_clase(DIRECTORIO_DATASET)
     except NotADirectoryError as error:
         print(f"[ERROR] {error}")
-        dataset = []
+        rutas_imagenes = []
 
     resultados_dataset = []
 
-    for nombre_archivo, imagen in dataset:
-        ruta = os.path.join(DIRECTORIO_DATASET, nombre_archivo)
+    for clase, ruta_imagen in rutas_imagenes:
         try:
-            resultado = procesar_imagen_completa(ruta, area_minima=800)
+            resultado = procesar_imagen_completa(ruta_imagen, area_minima=800)
+            resultado["clase"] = clase
+            mostrar_y_guardar_resultados(
+                resultado,
+                directorio_salida=DIRECTORIO_SALIDA,
+                mostrar=False,
+            )
             resultados_dataset.append(resultado)
-            # Para lotes grandes normalmente NO se usa cv2.imshow (bloquea
-            # la ejecución esperando una tecla); se recomienda solo guardar:
-            # mostrar_y_guardar_resultados(resultado, directorio_salida=DIRECTORIO_SALIDA)
         except ValueError as error:
-            print(f"[AVISO] Imagen '{nombre_archivo}' descartada: {error}")
+            print(f"[AVISO] Imagen '{os.path.basename(ruta_imagen)}' descartada ({clase}): {error}")
 
     print(
         f"\nSe procesaron correctamente {len(resultados_dataset)} de "
-        f"{len(dataset)} imágenes del dataset."
+        f"{len(rutas_imagenes)} imágenes del dataset."
     )
-
-    # A partir de aquí, `resultados_dataset` es la entrada directa de la
-    # Fase 2 (extracción de características estadísticas sobre
-    # `valores_a_roi` de cada imagen: media, desviación estándar, sesgo,
-    # curtosis, percentiles, etc., para luego construir un clasificador
-    # basado en reglas o umbrales -- sin ML/DL, conforme a la restricción
-    # del proyecto).

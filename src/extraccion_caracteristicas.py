@@ -39,6 +39,9 @@ Autor: Generado como apoyo de ingeniería de software para proyecto CP-Anemic.
 
 from typing import Tuple
 
+import csv
+import os
+
 import cv2
 import numpy as np
 
@@ -419,74 +422,109 @@ class ExtractorCaracteristicas:
 
 
 # ==============================================================================
-# BLOQUE DE PRUEBA / EJEMPLO DE USO
+# UTILIDADES PARA CREAR EL CSV DE CARACTERÍSTICAS
 # ==============================================================================
 
-if __name__ == "__main__":
-    import os
+def listar_pares_original_mascara(directorio_base: str,
+                                  subdirectorios=("Anemic", "Non-anemic")) -> list:
+    """
+    Busca en las carpetas de resultados_fase1 por pares de archivos:
+    - <prefijo>_1_original.png
+    - <prefijo>_4_mascara.png
 
-    # ------------------------------------------------------------------
-    # Se reutilizan las salidas típicas de la Fase 1:
-    #   - imagen original
-    #   - máscara binaria de la ROI (0/255)
-    # Ajuste las rutas a sus archivos reales.
-    # ------------------------------------------------------------------
-    RUTA_IMAGEN_ORIGINAL = "resultados_fase1/muestra_001_1_original.png"
-    RUTA_MASCARA_ROI = "resultados_fase1/muestra_001_4_mascara.png"
+    Retorna una lista de diccionarios con la información necesaria para
+    procesar cada imagen.
+    """
+    pares = []
 
+    for nombre_clase in subdirectorios:
+        carpeta_clase = os.path.join(directorio_base, nombre_clase)
+        if not os.path.isdir(carpeta_clase):
+            print(f"[AVISO] No se encontró la carpeta '{carpeta_clase}'.")
+            continue
+
+        for nombre_archivo in sorted(os.listdir(carpeta_clase)):
+            if not nombre_archivo.endswith("_1_original.png"):
+                continue
+
+            prefijo = nombre_archivo[:-len("_1_original.png")]
+            ruta_mascara = os.path.join(carpeta_clase, f"{prefijo}_4_mascara.png")
+            if not os.path.isfile(ruta_mascara):
+                print(
+                    f"[AVISO] Se omitió '{nombre_archivo}' porque no existe "
+                    f"la máscara correspondiente: {ruta_mascara}"
+                )
+                continue
+
+            pares.append({
+                "clase": nombre_clase,
+                "prefijo": prefijo,
+                "ruta_original": os.path.join(carpeta_clase, nombre_archivo),
+                "ruta_mascara": ruta_mascara,
+            })
+
+    return pares
+
+
+def guardar_csv_caracteristicas(directorio_resultados_fase1: str,
+                                ruta_csv: str,
+                                subdirectorios=("Anemic", "Non-anemic")) -> int:
+    """
+    Procesa todas las imágenes encontradas en las carpetas de clase dentro
+    de resultados_fase1 y guarda un CSV con las 12 características
+    extraídas para cada imagen.
+    """
     extractor = ExtractorCaracteristicas(
         umbral_inferior=20,
         umbral_superior=240,
         umbral_hue_normalizado=0.95,
     )
 
-    if os.path.isfile(RUTA_IMAGEN_ORIGINAL) and os.path.isfile(RUTA_MASCARA_ROI):
-        # ---------- Caso real: usando salidas de la Fase 1 -------------
-        imagen = cv2.imread(RUTA_IMAGEN_ORIGINAL, cv2.IMREAD_COLOR)
-        mascara = cv2.imread(RUTA_MASCARA_ROI, cv2.IMREAD_GRAYSCALE)
+    pares = listar_pares_original_mascara(directorio_resultados_fase1, subdirectorios)
 
-        try:
-            vector = extractor.extraer(imagen, mascara)
-            print("Vector de 12 características extraído correctamente:\n")
-            for nombre, valor in zip(extractor.NOMBRES_CARACTERISTICAS, vector):
-                print(f"  {nombre:10s} = {valor:.4f}")
-        except ValueError as error:
-            print(f"[ERROR] {error}")
+    os.makedirs(os.path.dirname(ruta_csv), exist_ok=True)
 
-    else:
-        # ---------- Caso demo: datos sintéticos, sin depender de la ----
-        # ---------- Fase 1, solo para verificar que el módulo corre ----
-        print(
-            "[AVISO] No se encontraron archivos de la Fase 1 en las rutas "
-            "indicadas. Ejecutando una prueba con datos sintéticos.\n"
+    with open(ruta_csv, "w", newline="", encoding="utf-8") as archivo_csv:
+        writer = csv.writer(archivo_csv)
+        writer.writerow(
+            ["clase", "imagen", "ruta_original", "ruta_mascara", *extractor.NOMBRES_CARACTERISTICAS]
         )
 
-        np.random.seed(42)
-        alto, ancho = 120, 160
+        procesadas = 0
+        for item in pares:
+            imagen = cv2.imread(item["ruta_original"], cv2.IMREAD_COLOR)
+            mascara = cv2.imread(item["ruta_mascara"], cv2.IMREAD_GRAYSCALE)
 
-        # Imagen sintética con tonos rojizos (simulando conjuntiva) más
-        # ruido de fondo, para poder verificar el pipeline end-to-end.
-        imagen_sintetica = np.random.randint(
-            60, 200, size=(alto, ancho, 3), dtype=np.uint8
-        )
-        imagen_sintetica[:, :, 2] = np.clip(  # potenciamos el canal Rojo (BGR[2]=R)
-            imagen_sintetica[:, :, 2].astype(np.int32) + 40, 0, 255
-        ).astype(np.uint8)
+            if imagen is None or mascara is None:
+                print(f"[AVISO] No se pudo leer '{item['ruta_original']}'.")
+                continue
 
-        # Máscara sintética: una región elíptica en el centro de la imagen.
-        mascara_sintetica = np.zeros((alto, ancho), dtype=np.uint8)
-        cv2.ellipse(
-            mascara_sintetica,
-            center=(ancho // 2, alto // 2),
-            axes=(ancho // 3, alto // 4),
-            angle=0, startAngle=0, endAngle=360,
-            color=255, thickness=-1,
-        )
+            try:
+                vector = extractor.extraer(imagen, mascara)
+            except ValueError as error:
+                print(f"[AVISO] No se pudo procesar {item['prefijo']}: {error}")
+                continue
 
-        vector = extractor.extraer(imagen_sintetica, mascara_sintetica)
+            writer.writerow([
+                item["clase"],
+                item["prefijo"],
+                item["ruta_original"],
+                item["ruta_mascara"],
+                *vector.tolist(),
+            ])
+            procesadas += 1
+            print(f"[OK] {item['clase']}/{item['prefijo']} -> características extraídas")
 
-        print("Vector de 12 características (datos sintéticos):\n")
-        for nombre, valor in zip(extractor.NOMBRES_CARACTERISTICAS, vector):
-            print(f"  {nombre:10s} = {valor:.4f}")
+    print(f"\nSe guardaron {procesadas} registros en: {ruta_csv}")
+    return procesadas
 
-        print(f"\nForma del vector: {vector.shape}  (esperado: (12,))")
+
+# ==============================================================================
+# BLOQUE DE EJECUCIÓN PRINCIPAL
+# ==============================================================================
+
+if __name__ == "__main__":
+    DIRECTORIO_RESULTADOS = "resultados_fase1"
+    RUTA_CSV = os.path.join(DIRECTORIO_RESULTADOS, "caracteristicas_extraidas.csv")
+    guardar_csv_caracteristicas(DIRECTORIO_RESULTADOS, RUTA_CSV)
+
