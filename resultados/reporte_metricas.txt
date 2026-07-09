@@ -1,14 +1,14 @@
 ==================================================
-REPORTE DE MÉTRICAS DEL MODELO
+REPORTE DE M�TRICAS DEL MODELO
 ==================================================
 
-Este archivo contendrá el reporte de métricas del modelo después del entrenamiento.
+Fecha: 2026-07-03 10:45:44
 
-Será actualizado con:
-- Accuracy
-- Precisión
-- Recall
-- F1-Score
-- Matriz de Confusión
-- Fecha de generación
+accuracy: 0.6428571428571429
+precision: 1.0
+recall: 0.375
+f1: 0.5454545454545454
 
+matriz_confusion:
+{'TP': 3, 'FP': 0, 'TN': 6, 'FN': 5}
+loss_promedio: 0.5162721511896151
