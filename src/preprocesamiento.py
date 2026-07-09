@@ -1,444 +1,490 @@
 """
-preprocesamiento.py
--------------------------------------------------------------------------------
-PROPOSITO:
-    Este archivo NO usa ninguna libreria externa (ni numpy, ni Pillow,
-    ni nada fuera de la libreria estandar de Python: csv, random, json,
-    math). Toma el dataset.csv generado por extraccion_caracteristicas.py
-    (filas de r_promedio, g_promedio, b_promedio, s_promedio, edad,
-    sexo, etiqueta) y lo deja listo para entrenar la red neuronal:
+==============================================================================
+ FASE 1: PREPROCESAMIENTO Y SEGMENTACIÓN DE LA CONJUNTIVA PALPEBRAL
+ Proyecto: Detección de Anemia Infantil - Dataset CP-Anemic
+==============================================================================
 
-    1. NORMALIZACION MIN-MAX de cada caracteristica de entrada, usando
-       la formula citada en los documentos de referencia (Doc 2 - Asare
-       et al.):
-                X_normalizado = (X - X_min) / (X_max - X_min)
-       Esto es indispensable porque las variables de entrada estan en
-       escalas muy distintas (R/G/B van de 0 a 255, la saturacion va de
-       0 a 1, la edad puede ir de 0 a 90+). Sin normalizar, la red le
-       daria mas "peso" e importancia a los numeros mas grandes solo
-       por su magnitud, sin que eso tenga ningun sentido real.
+Descripción general:
+---------------------
+Módulo de visión computacional "clásica" (SIN Machine Learning / Deep Learning,
+sin librerías como scikit-learn, TensorFlow o PyTorch) que implementa:
 
-    2. BARAJADO (shuffle) de las filas, para que el orden en que vienen
-       los pacientes en el CSV (por ejemplo, todos los italianos
-       primero y luego todos los indios) no afecte la division de los
-       conjuntos de entrenamiento, validacion y prueba.
+    1. Carga de imágenes del dataset.
+    2. Segmentación de la Región de Interés (ROI) -> conjuntiva palpebral
+       inferior, mediante el Algoritmo de Umbralización Triangular aplicado
+       sobre el canal a* del espacio de color CIELAB.
+    3. Conversión al espacio CIELAB y extracción del canal a* (eje rojo-verde),
+       tanto en formato "imagen" (para mapas de calor) como en formato
+       "vector 1D" (listo para estadísticas descriptivas en la Fase 2).
+    4. Visualización/guardado de: imagen original, ROI aislada y mapa de
+       calor del canal a*.
 
-    3. DIVISION TRAIN / VALIDATION / TEST en proporcion 70% / 15% / 15%,
-       siguiendo el mismo estandar que usa el paper de referencia
-       (Fuentes-Beingolea et al., "Illumination-Robust Conjunctival
-       Image Preprocessing...") sobre este mismo dataset.
+Librerías utilizadas (EXCLUSIVAMENTE):
+    - cv2   (OpenCV)
+    - numpy
+    - os
 
-    4. GUARDADO de los valores minimo y maximo usados en la
-       normalizacion (parametros_normalizacion.json). Esto es CRITICO:
-       cuando mas adelante se quiera clasificar un paciente nuevo, hay
-       que normalizar sus caracteristicas usando estos MISMOS valores
-       de minimo/maximo del entrenamiento, no unos nuevos calculados
-       sobre un solo dato. Si no se guardaran estos parametros, seria
-       imposible usar la red entrenada para predecir casos futuros.
-
-ENTRADA  : data/dataset.csv
-SALIDAS  : data/dataset_train.csv
-           data/dataset_val.csv
-           data/dataset_test.csv
-           data/parametros_normalizacion.json
--------------------------------------------------------------------------------
+Autor: Generado como apoyo de ingeniería de software para proyecto CP-Anemic.
+==============================================================================
 """
 
 import os
-import csv
-import json
-import random
+import cv2
 import numpy as np
-from PIL import Image
 
 
-# ------------------------------------------------------------------------- #
-# 1. CONFIGURACION GENERAL
-# ------------------------------------------------------------------------- #
-RUTA_DATASET_ENTRADA = os.path.join("data", "dataset.csv")
+# ==============================================================================
+# 1. CARGA DE IMÁGENES
+# ==============================================================================
 
-RUTA_SALIDA_TRAIN = os.path.join("data", "dataset_train.csv")
-RUTA_SALIDA_VAL = os.path.join("data", "dataset_val.csv")
-RUTA_SALIDA_TEST = os.path.join("data", "dataset_test.csv")
-RUTA_PARAMETROS_NORMALIZACION = os.path.join("data", "parametros_normalizacion.json")
-
-# Proporciones de division del dataset (deben sumar 1.0).
-PROPORCION_TRAIN = 0.70
-PROPORCION_VAL = 0.15
-PROPORCION_TEST = 0.15
-
-# Columnas que son CARACTERISTICAS DE ENTRADA (se normalizan).
-# El orden aqui define el orden en que la red neuronal recibira los
-# datos: 6 entradas, tal como indica la arquitectura "6 -> 100 -> 50 -> 1".
-COLUMNAS_CARACTERISTICAS = [
-    "r_promedio",
-    "g_promedio",
-    "b_promedio",
-    "s_promedio",
-    "edad",
-    "sexo",
-]
-
-# Columna de salida (lo que la red debe aprender a predecir).
-COLUMNA_ETIQUETA = "etiqueta"
-
-# Semilla aleatoria fija: usar siempre el mismo numero aqui garantiza
-# que, al volver a correr este script, se obtenga EXACTAMENTE la misma
-# division train/val/test. Esto es importante para poder reproducir
-# los resultados del informe (si se cambia el numero, el barajado y la
-# division cambian).
-SEMILLA_ALEATORIA = 42
-
-
-# ------------------------------------------------------------------------- #
-# 2. LECTURA DEL DATASET CRUDO (dataset.csv)
-# ------------------------------------------------------------------------- #
-def leer_dataset(ruta_csv=RUTA_DATASET_ENTRADA):
+def cargar_imagen(ruta_imagen: str) -> np.ndarray:
     """
-    Lee data/dataset.csv y devuelve una lista de diccionarios, uno por
-    paciente, con los valores ya convertidos a float/int (en el CSV
-    todo se guarda como texto, hay que convertirlo de vuelta a numero).
+    Carga una única imagen desde disco en formato BGR (estándar de OpenCV).
+
+    Parámetros
+    ----------
+    ruta_imagen : str
+        Ruta absoluta o relativa al archivo de imagen.
+
+    Retorna
+    -------
+    np.ndarray
+        Imagen en formato BGR (alto, ancho, 3).
+
+    Lanza
+    -----
+    FileNotFoundError
+        Si la ruta no existe en el sistema de archivos.
+    ValueError
+        Si OpenCV no logra decodificar el archivo (corrupto, formato
+        no soportado, etc.).
     """
-    filas = []
+    if not os.path.isfile(ruta_imagen):
+        raise FileNotFoundError(f"No se encontró el archivo: {ruta_imagen}")
 
-    with open(ruta_csv, mode="r", encoding="utf-8") as archivo:
-        lector = csv.DictReader(archivo)
-        for fila_texto in lector:
-            fila_numerica = {
-                "r_promedio": float(fila_texto["r_promedio"]),
-                "g_promedio": float(fila_texto["g_promedio"]),
-                "b_promedio": float(fila_texto["b_promedio"]),
-                "s_promedio": float(fila_texto["s_promedio"]),
-                "edad": float(fila_texto["edad"]),
-                "sexo": int(float(fila_texto["sexo"])),
-                "etiqueta": int(float(fila_texto["etiqueta"])),
-            }
-            filas.append(fila_numerica)
+    imagen = cv2.imread(ruta_imagen, cv2.IMREAD_COLOR)
 
-    return filas
+    if imagen is None:
+        raise ValueError(
+            f"OpenCV no pudo decodificar la imagen '{ruta_imagen}'. "
+            "Verifique que el archivo no esté corrupto y que la extensión "
+            "sea válida (.jpg, .png, .bmp, etc.)."
+        )
 
-
-# ------------------------------------------------------------------------- #
-# 3. CALCULO DE LOS PARAMETROS DE NORMALIZACION (MIN Y MAX POR COLUMNA)
-# ------------------------------------------------------------------------- #
-def calcular_parametros_normalizacion(filas):
-    """
-    Recorre todas las filas y calcula, para cada columna de
-    caracteristicas, su valor minimo y maximo observado.
-
-    IMPORTANTE: estos minimos/maximos se calculan SOLO sobre los datos
-    que luego se usaran como conjunto de ENTRENAMIENTO (esto se
-    garantiza en construir_conjuntos_preprocesados, que llama a esta
-    funcion unicamente con la porcion de train). Calcular los
-    parametros usando tambien los datos de validacion/prueba seria una
-    "fuga de informacion" (data leakage): la red terminaria
-    indirectamente "viendo" datos que deberian servir solo para
-    evaluarla de forma honesta.
-
-    Devuelve un diccionario:
-        { "r_promedio": {"min": 10.2, "max": 230.5}, ... }
-    """
-    parametros = {}
-
-    for nombre_columna in COLUMNAS_CARACTERISTICAS:
-        valores_columna = [fila[nombre_columna] for fila in filas]
-        parametros[nombre_columna] = {
-            "min": min(valores_columna),
-            "max": max(valores_columna),
-        }
-
-    return parametros
-
-
-# ------------------------------------------------------------------------- #
-# 4. NORMALIZACION MIN-MAX
-# ------------------------------------------------------------------------- #
-def normalizar_valor(valor, valor_min, valor_max):
-    """
-    Aplica la formula de normalizacion Min-Max:
-        X_normalizado = (X - X_min) / (X_max - X_min)
-
-    El resultado siempre queda en el rango [0, 1].
-
-    Caso especial: si valor_max == valor_min (es decir, la columna
-    tiene el MISMO valor en todos los pacientes, por ejemplo si todos
-    tuvieran exactamente la misma edad), la formula normal dividiria
-    entre cero. En ese caso se devuelve 0.0, ya que esa columna no
-    aporta ninguna informacion para distinguir pacientes.
-    """
-    rango = valor_max - valor_min
-    if rango == 0:
-        return 0.0
-    return (valor - valor_min) / rango
-
-
-def normalizar_fila(fila, parametros_normalizacion):
-    """
-    Devuelve una NUEVA fila (diccionario) con todas las columnas de
-    COLUMNAS_CARACTERISTICAS ya normalizadas al rango [0, 1], usando
-    los parametros de minimo/maximo recibidos. La columna "etiqueta"
-    se conserva igual (0 o 1), ya que esa es justamente lo que la red
-    debe aprender a predecir, no una entrada.
-    """
-    fila_normalizada = {}
-
-    for nombre_columna in COLUMNAS_CARACTERISTICAS:
-        valor_original = fila[nombre_columna]
-        minimo = parametros_normalizacion[nombre_columna]["min"]
-        maximo = parametros_normalizacion[nombre_columna]["max"]
-        fila_normalizada[nombre_columna] = normalizar_valor(valor_original, minimo, maximo)
-
-    fila_normalizada[COLUMNA_ETIQUETA] = fila[COLUMNA_ETIQUETA]
-    return fila_normalizada
-
-
-def abrir_imagen_robusta(ruta_imagen):
-    """Abre la imagen con respaldo simple para evitar errores de lectura."""
-    imagen = Image.open(ruta_imagen)
-    imagen.load()
-    if imagen.mode not in {"RGB", "RGBA", "L"}:
-        imagen = imagen.convert("RGBA")
     return imagen
 
 
-def preprocesar_imagen_para_caracteristicas(ruta_imagen, tamaño=(128, 128)):
-    """Aplica una etapa ligera de preprocesamiento basada en escala de grises y HSV."""
-    imagen = abrir_imagen_robusta(ruta_imagen).resize(tamaño)
-    arreglo = np.array(imagen, dtype=np.float32)
-
-    if arreglo.ndim == 2:
-        arreglo = np.stack([arreglo, arreglo, arreglo, np.ones_like(arreglo)], axis=-1)
-    if arreglo.shape[-1] == 3:
-        arreglo = np.dstack([arreglo, np.ones(arreglo.shape[:2], dtype=np.float32)])
-
-    rgb = arreglo[:, :, :3] / 255.0
-    alpha = arreglo[:, :, 3] if arreglo.shape[-1] > 3 else None
-
-    if alpha is not None:
-        mascara = alpha >= 180
-    else:
-        mascara = np.ones(rgb.shape[:2], dtype=bool)
-
-    mascara = np.logical_and(mascara, np.any(rgb > 0.0, axis=-1))
-    if not np.any(mascara):
-        raise ValueError("No se encontró zona útil de la imagen para analizar")
-
-    pixeles = rgb[mascara]
-    intensidad = 0.299 * pixeles[:, 0] + 0.587 * pixeles[:, 1] + 0.114 * pixeles[:, 2]
-    referencia = intensidad / (np.median(intensidad) + 1e-8)
-    referencia = np.clip(referencia, 1e-4, None)
-
-    rgb_corr = pixeles / referencia[:, None]
-    rgb_corr = np.clip(rgb_corr, 0.0, 1.0)
-
-    maximo = np.maximum(np.maximum(rgb_corr[:, 0], rgb_corr[:, 1]), rgb_corr[:, 2])
-    minimo = np.minimum(np.minimum(rgb_corr[:, 0], rgb_corr[:, 1]), rgb_corr[:, 2])
-    denominador = np.where(maximo == 0.0, 1.0, maximo)
-    saturacion = np.where(maximo > 0.0, (maximo - minimo) / denominador, 0.0)
-
-    r_promedio = float(np.mean(rgb_corr[:, 0]) * 255.0)
-    g_promedio = float(np.mean(rgb_corr[:, 1]) * 255.0)
-    b_promedio = float(np.mean(rgb_corr[:, 2]) * 255.0)
-    s_promedio = float(np.mean(saturacion))
-    return r_promedio, g_promedio, b_promedio, s_promedio
-
-
-def normalizar_minmax(X, parametros=None):
-    """Normaliza columnas con el esquema min-max y devuelve los parámetros usados."""
-    X = np.array(X, dtype=float)
-    if parametros is None:
-        minimos = X.min(axis=0)
-        maximos = X.max(axis=0)
-        rango = maximos - minimos
-        rango[rango == 0.0] = 1.0
-        X_norm = (X - minimos) / rango
-        return X_norm, minimos, maximos
-
-    minimos = parametros["min"]
-    maximos = parametros["max"]
-    rango = maximos - minimos
-    rango[rango == 0.0] = 1.0
-    X_norm = (X - minimos) / rango
-    return X_norm, minimos, maximos
-
-
-def dividir_train_val_test(X, y, ratios=(0.7, 0.15, 0.15)):
-    """Divide los datos en entrenamiento, validación y prueba."""
-    indices = np.arange(len(y))
-    np.random.seed(SEMILLA_ALEATORIA)
-    np.random.shuffle(indices)
-
-    X = np.array(X, dtype=float)
-    y = np.array(y, dtype=float)
-    X = X[indices]
-    y = y[indices]
-
-    n_total = len(y)
-    n_train = int(round(n_total * ratios[0]))
-    n_val = int(round(n_total * ratios[1]))
-    n_test = n_total - n_train - n_val
-
-    X_train = X[:n_train]
-    X_val = X[n_train:n_train + n_val]
-    X_test = X[n_train + n_val:n_train + n_val + n_test]
-
-    y_train = y[:n_train]
-    y_val = y[n_train:n_train + n_val]
-    y_test = y[n_train + n_val:n_train + n_val + n_test]
-
-    return X_train, X_val, X_test, y_train, y_val, y_test
-
-
-def balancear_clases(X, y, metodo="submuestreo"):
-    """Reduce el conjunto mayoritario para equilibrar las clases."""
-    X = np.array(X, dtype=float)
-    y = np.array(y, dtype=float)
-
-    indices_cero = np.where(y == 0)[0]
-    indices_uno = np.where(y == 1)[0]
-
-    if len(indices_cero) > len(indices_uno):
-        indices_mayoria = indices_cero
-        indices_minoria = indices_uno
-    else:
-        indices_mayoria = indices_uno
-        indices_minoria = indices_cero
-
-    if metodo == "submuestreo":
-        indices_mayoria = np.random.choice(indices_mayoria, size=len(indices_minoria), replace=False)
-    else:
-        raise ValueError("Método no soportado")
-
-    indices = np.concatenate([indices_mayoria, indices_minoria])
-    np.random.shuffle(indices)
-    return X[indices], y[indices]
-
-
-# ------------------------------------------------------------------------- #
-# 5. BARAJADO Y DIVISION TRAIN / VALIDATION / TEST
-# ------------------------------------------------------------------------- #
-def barajar_y_dividir(filas, proporcion_train, proporcion_val, proporcion_test,
-                       semilla=SEMILLA_ALEATORIA):
+def cargar_dataset(directorio: str,
+                    extensiones=(".jpg", ".jpeg", ".png", ".bmp")) -> list:
     """
-    Mezcla aleatoriamente el orden de las filas (para que no queden
-    agrupadas por pais o por orden de carga) y las divide en 3 listas:
-    entrenamiento, validacion y prueba, segun las proporciones dadas.
+    Recorre un directorio local y carga todas las imágenes válidas del
+    dataset CP-Anemic.
 
-    Se usa una semilla fija (random.seed) para que el barajado sea
-    siempre el mismo cada vez que se ejecuta este script, garantizando
-    resultados reproducibles para el informe.
+    Parámetros
+    ----------
+    directorio : str
+        Carpeta donde se encuentran las imágenes del dataset.
+    extensiones : tuple
+        Extensiones de archivo aceptadas.
+
+    Retorna
+    -------
+    list[tuple[str, np.ndarray]]
+        Lista de tuplas (nombre_archivo, imagen_bgr). Las imágenes que no
+        se puedan leer se omiten (con aviso en consola) en lugar de
+        interrumpir todo el proceso de carga.
     """
-    assert abs((proporcion_train + proporcion_val + proporcion_test) - 1.0) < 1e-9, \
-        "Las proporciones de train/val/test deben sumar 1.0"
+    if not os.path.isdir(directorio):
+        raise NotADirectoryError(f"El directorio no existe: {directorio}")
 
-    filas_copia = list(filas)  # copia para no modificar la lista original
-    random.seed(semilla)
-    random.shuffle(filas_copia)
+    dataset = []
+    archivos = sorted(os.listdir(directorio))
 
-    total_filas = len(filas_copia)
-    cantidad_train = int(round(total_filas * proporcion_train))
-    cantidad_val = int(round(total_filas * proporcion_val))
-    # El conjunto de test toma todo lo que quede, para no perder ni
-    # sobrar filas por errores de redondeo.
-    cantidad_test = total_filas - cantidad_train - cantidad_val
+    for nombre_archivo in archivos:
+        if nombre_archivo.lower().endswith(extensiones):
+            ruta_completa = os.path.join(directorio, nombre_archivo)
+            try:
+                imagen = cargar_imagen(ruta_completa)
+                dataset.append((nombre_archivo, imagen))
+            except (FileNotFoundError, ValueError) as error:
+                print(f"[AVISO] Se omitió '{nombre_archivo}': {error}")
 
-    conjunto_train = filas_copia[:cantidad_train]
-    conjunto_val = filas_copia[cantidad_train:cantidad_train + cantidad_val]
-    conjunto_test = filas_copia[cantidad_train + cantidad_val:]
+    if len(dataset) == 0:
+        print(f"[AVISO] No se cargó ninguna imagen válida desde '{directorio}'.")
 
-    return conjunto_train, conjunto_val, conjunto_test
+    return dataset
 
 
-# ------------------------------------------------------------------------- #
-# 6. GUARDADO DE RESULTADOS (CSVs normalizados + JSON de parametros)
-# ------------------------------------------------------------------------- #
-def guardar_conjunto_csv(filas, ruta_salida):
+# ==============================================================================
+# 2. SEGMENTACIÓN DE LA ROI (CONJUNTIVA) - UMBRALIZACIÓN TRIANGULAR SOBRE a*
+# ==============================================================================
+
+def segmentar_roi_conjuntiva(imagen_bgr: np.ndarray, area_minima: int = 800):
     """
-    Guarda una lista de filas (diccionarios ya normalizados) en un
-    archivo CSV, con las columnas en el orden de COLUMNAS_CARACTERISTICAS
-    seguidas de la columna "etiqueta".
+    Aísla la conjuntiva palpebral (zona rojiza/rosada) descartando ruido
+    típico del dataset como piel, pestañas, brillos y esclerótica.
+
+    Estrategia (matemática/matricial):
+    -----------------------------------
+    1) Convertimos la imagen a CIELAB y nos quedamos con el canal a*
+       (eje rojo-verde). En este espacio, el rojo puro tiende a valores
+       altos y el verde a valores bajos; la piel y la esclerótica quedan
+       cerca del valor neutro, mientras que el tejido de la conjuntiva
+       (muy vascularizado) se desplaza claramente hacia valores altos.
+       Esto lo convierte en un mejor "mapa de rojez" que trabajar
+       directamente sobre RGB o escala de grises.
+
+    2) Aplicamos un suavizado Gaussiano 5x5 para atenuar ruido de alta
+       frecuencia (venas finas, brillos especulares) ANTES de umbralizar,
+       ya que el algoritmo Triangular es sensible a picos espurios del
+       histograma.
+
+    3) Aplicamos el Algoritmo de Umbralización Triangular
+       (cv2.THRESH_TRIANGLE). Geométricamente, este método traza una
+       línea recta entre el pico más alto del histograma y su extremo
+       más alejado (el bin más lejano con frecuencia distinta de cero),
+       y busca el punto del histograma cuya distancia perpendicular a
+       esa recta es máxima; ese punto se usa como umbral. Es ideal en
+       este caso porque el histograma del canal a* en fotos de conjuntiva
+       suele tener UNA sola moda dominante (fondo: piel/esclerótica) con
+       una "cola" hacia valores altos (conjuntiva) -- exactamente el
+       escenario para el que el método Triangular fue diseñado (a
+       diferencia de Otsu, pensado para histogramas bimodales
+       balanceados).
+
+    4) Limpiamos la máscara binaria resultante con operaciones
+       morfológicas: apertura (elimina puntos aislados de ruido) seguida
+       de cierre (rellena pequeños huecos internos, p. ej. reflejos de luz
+       sobre el tejido húmedo).
+
+    5) Buscamos contornos externos sobre la máscara limpia y seleccionamos
+       el de MAYOR ÁREA, asumiendo que corresponde al párpado inferior
+       (la conjuntiva suele ser la región rojiza continua más grande
+       dentro del recorte del ojo). Se descarta si su área es menor a
+       `area_minima`, para evitar falsos positivos (p. ej. una pequeña
+       mancha de piel enrojecida).
+
+    Parámetros
+    ----------
+    imagen_bgr : np.ndarray
+        Imagen original en formato BGR (salida de cv2.imread).
+    area_minima : int
+        Área mínima (en píxeles) que debe tener el contorno encontrado
+        para considerarse una ROI válida y no ruido residual.
+
+    Retorna
+    -------
+    mascara_final : np.ndarray (uint8, valores 0 o 255)
+        Máscara binaria de un solo canal con la forma de la conjuntiva.
+    roi_bgr : np.ndarray
+        Imagen original recortada por la máscara (fondo en NEGRO fuera
+        de la conjuntiva).
+
+    Lanza
+    -----
+    ValueError
+        Si la imagen de entrada es inválida, si no se encuentra ningún
+        contorno tras la umbralización, o si el contorno más grande no
+        supera `area_minima`.
     """
-    columnas = COLUMNAS_CARACTERISTICAS + [COLUMNA_ETIQUETA]
+    if imagen_bgr is None or imagen_bgr.size == 0:
+        raise ValueError("La imagen de entrada está vacía o es None.")
 
-    os.makedirs(os.path.dirname(ruta_salida), exist_ok=True)
-    with open(ruta_salida, mode="w", newline="", encoding="utf-8") as archivo:
-        escritor = csv.DictWriter(archivo, fieldnames=columnas)
-        escritor.writeheader()
-        escritor.writerows(filas)
+    # --- Paso 1: pasar a CIELAB y quedarnos con el canal a* -----------------
+    imagen_lab = cv2.cvtColor(imagen_bgr, cv2.COLOR_BGR2LAB)
+    _, canal_a, _ = cv2.split(imagen_lab)
+    # Nota: OpenCV codifica a* en el rango [0, 255], donde ~128 es neutro,
+    # valores > 128 tienden a rojo/magenta y valores < 128 a verde.
 
+    # --- Paso 2: suavizado para estabilizar el histograma --------------------
+    canal_a_suavizado = cv2.GaussianBlur(canal_a, (5, 5), 0)
 
-def guardar_parametros_normalizacion(parametros, ruta_salida=RUTA_PARAMETROS_NORMALIZACION):
-    """
-    Guarda los minimos/maximos usados en la normalizacion en un archivo
-    JSON, para poder reutilizarlos despues al clasificar pacientes
-    nuevos (entrenamiento.py los genera, y main.py/red_neuronal.py los
-    leera mas adelante para normalizar cualquier caso nuevo exactamente
-    igual que se normalizaron los datos de entrenamiento).
-    """
-    os.makedirs(os.path.dirname(ruta_salida), exist_ok=True)
-    with open(ruta_salida, mode="w", encoding="utf-8") as archivo:
-        json.dump(parametros, archivo, indent=4, ensure_ascii=False)
-
-
-# ------------------------------------------------------------------------- #
-# 7. FUNCION PRINCIPAL: ORQUESTA TODO EL PREPROCESAMIENTO
-# ------------------------------------------------------------------------- #
-def construir_conjuntos_preprocesados(ruta_dataset=RUTA_DATASET_ENTRADA):
-    """
-    Ejecuta el pipeline completo de preprocesamiento:
-        1. Lee dataset.csv
-        2. Baraja y divide en train/val/test (70/15/15)
-        3. Calcula los parametros de normalizacion SOLO con el
-           conjunto de entrenamiento (para evitar fuga de informacion)
-        4. Normaliza los 3 conjuntos usando esos mismos parametros
-        5. Guarda los 3 CSV normalizados y el JSON de parametros
-    """
-    print("Iniciando preprocesamiento del dataset...")
-
-    filas_originales = leer_dataset(ruta_dataset)
-    print(f"Dataset leido: {len(filas_originales)} pacientes en total.")
-
-    conjunto_train, conjunto_val, conjunto_test = barajar_y_dividir(
-        filas_originales, PROPORCION_TRAIN, PROPORCION_VAL, PROPORCION_TEST
+    # --- Paso 3: Umbralización Triangular ------------------------------------
+    _, mascara_bin = cv2.threshold(
+        canal_a_suavizado, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_TRIANGLE
     )
-    print(f"Division train/val/test: "
-          f"{len(conjunto_train)} / {len(conjunto_val)} / {len(conjunto_test)} pacientes.")
 
-    # Los parametros de normalizacion se calculan SOLO con el conjunto
-    # de entrenamiento, para no filtrar informacion de val/test.
-    parametros_normalizacion = calcular_parametros_normalizacion(conjunto_train)
+    # --- Paso 4: limpieza morfológica ----------------------------------------
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
+    mascara_limpia = cv2.morphologyEx(
+        mascara_bin, cv2.MORPH_OPEN, kernel, iterations=2
+    )
+    mascara_limpia = cv2.morphologyEx(
+        mascara_limpia, cv2.MORPH_CLOSE, kernel, iterations=2
+    )
 
-    print("\nRangos [min, max] encontrados en el conjunto de entrenamiento:")
-    for nombre_columna, valores in parametros_normalizacion.items():
-        print(f"  {nombre_columna}: min={valores['min']:.4f}, max={valores['max']:.4f}")
+    # --- Paso 5: selección del contorno principal (mayor área) --------------
+    contornos, _ = cv2.findContours(
+        mascara_limpia, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+    )
 
-    conjunto_train_normalizado = [normalizar_fila(f, parametros_normalizacion) for f in conjunto_train]
-    conjunto_val_normalizado = [normalizar_fila(f, parametros_normalizacion) for f in conjunto_val]
-    conjunto_test_normalizado = [normalizar_fila(f, parametros_normalizacion) for f in conjunto_test]
+    if len(contornos) == 0:
+        raise ValueError(
+            "No se encontró ningún contorno tras la umbralización triangular. "
+            "La imagen podría no contener una conjuntiva visible, tener mal "
+            "enfoque, o iluminación muy pobre."
+        )
 
-    guardar_conjunto_csv(conjunto_train_normalizado, RUTA_SALIDA_TRAIN)
-    guardar_conjunto_csv(conjunto_val_normalizado, RUTA_SALIDA_VAL)
-    guardar_conjunto_csv(conjunto_test_normalizado, RUTA_SALIDA_TEST)
-    guardar_parametros_normalizacion(parametros_normalizacion)
+    contorno_mayor = max(contornos, key=cv2.contourArea)
+    area_encontrada = cv2.contourArea(contorno_mayor)
 
-    # Pequeño resumen de balance de clases, util para el informe.
-    for nombre_conjunto, conjunto in [("train", conjunto_train),
-                                       ("val", conjunto_val),
-                                       ("test", conjunto_test)]:
-        cantidad_anemicos = sum(1 for f in conjunto if f[COLUMNA_ETIQUETA] == 1)
-        cantidad_no_anemicos = len(conjunto) - cantidad_anemicos
-        print(f"\nConjunto '{nombre_conjunto}': {len(conjunto)} pacientes "
-              f"({cantidad_anemicos} anemicos, {cantidad_no_anemicos} no anemicos)")
+    if area_encontrada < area_minima:
+        raise ValueError(
+            f"El contorno más grande encontrado ({area_encontrada:.0f} px) "
+            f"es menor que el área mínima permitida ({area_minima} px). "
+            "Posible falso positivo o imagen de baja calidad."
+        )
 
-    print(f"\nListo. Archivos generados:")
-    print(f"  {RUTA_SALIDA_TRAIN}")
-    print(f"  {RUTA_SALIDA_VAL}")
-    print(f"  {RUTA_SALIDA_TEST}")
-    print(f"  {RUTA_PARAMETROS_NORMALIZACION}")
+    # Máscara final: solo el contorno seleccionado, relleno por completo
+    mascara_final = np.zeros_like(mascara_limpia)
+    cv2.drawContours(mascara_final, [contorno_mayor], -1, 255, thickness=cv2.FILLED)
+
+    # --- Extracción de la ROI a color, con fondo negro -----------------------
+    roi_bgr = cv2.bitwise_and(imagen_bgr, imagen_bgr, mask=mascara_final)
+
+    return mascara_final, roi_bgr
 
 
-# ------------------------------------------------------------------------- #
-# 8. EJECUCION DIRECTA (PARA PROBAR ESTE ARCHIVO POR SI SOLO)
-# ------------------------------------------------------------------------- #
+# ==============================================================================
+# 3. CONVERSIÓN A CIELAB Y EXTRACCIÓN DEL CANAL a*
+# ==============================================================================
+
+def extraer_canal_a_cielab(roi_bgr: np.ndarray, mascara: np.ndarray):
+    """
+    Convierte la ROI segmentada del espacio RGB/BGR al espacio CIELAB y
+    extrae el canal a* (eje rojo-verde), que es el predictor clave de
+    ausencia de palidez: valores BAJOS de a* -> poca "rojez" -> posible
+    palidez/anemia; valores ALTOS -> tejido bien vascularizado ->
+    coloración normal.
+
+    Parámetros
+    ----------
+    roi_bgr : np.ndarray
+        Imagen BGR de la ROI ya segmentada (fondo negro fuera de la
+        conjuntiva), salida de `segmentar_roi_conjuntiva`.
+    mascara : np.ndarray
+        Máscara binaria (0/255) que indica los píxeles válidos de la
+        conjuntiva, misma salida de `segmentar_roi_conjuntiva`.
+
+    Retorna
+    -------
+    canal_a_visual : np.ndarray (uint8, misma forma que la máscara)
+        Canal a* de la ROI en escala de grises, con 0 fuera de la
+        máscara. Pensado para visualización / mapas de calor.
+    valores_a_roi : np.ndarray (1D, uint8)
+        Vector con ÚNICAMENTE los valores de a* de los píxeles dentro de
+        la conjuntiva (sin el fondo negro), listo para calcular
+        estadísticas (media, desviación estándar, mediana, percentiles,
+        etc.) en la Fase 2 de extracción de características.
+
+    Lanza
+    -----
+    ValueError
+        Si la ROI, la máscara son None, o si la máscara no tiene ningún
+        píxel activo.
+    """
+    if roi_bgr is None or mascara is None:
+        raise ValueError(
+            "La ROI o la máscara son None; ejecute primero la segmentación "
+            "con `segmentar_roi_conjuntiva`."
+        )
+
+    # Conversión de espacio de color: BGR -> CIELAB
+    roi_lab = cv2.cvtColor(roi_bgr, cv2.COLOR_BGR2LAB)
+    _, canal_a, _ = cv2.split(roi_lab)
+
+    # Como roi_bgr ya tiene fondo negro, al convertir a LAB el canal a*
+    # del fondo NO queda en 0 automáticamente (el negro BGR (0,0,0)
+    # equivale a a*=128 en LAB, es decir, "neutro"). Forzamos explícitamente
+    # el fondo a 0 aplicando la máscara sobre el canal a*, para que la
+    # visualización distinga claramente tejido (>0) de fondo (=0).
+    canal_a_visual = cv2.bitwise_and(canal_a, canal_a, mask=mascara)
+
+    # Extraemos SOLO los píxeles pertenecientes a la conjuntiva como un
+    # arreglo 1D mediante indexado booleano con la máscara. Este vector
+    # es el insumo directo para funciones estadísticas de NumPy
+    # (np.mean, np.std, np.median, etc.) en la siguiente fase.
+    valores_a_roi = canal_a[mascara == 255]
+
+    if valores_a_roi.size == 0:
+        raise ValueError(
+            "La máscara no contiene píxeles activos; no hay ROI que analizar."
+        )
+
+    return canal_a_visual, valores_a_roi
+
+
+# ==============================================================================
+# 4. ORQUESTADOR: PROCESAMIENTO COMPLETO DE UNA IMAGEN
+# ==============================================================================
+
+def procesar_imagen_completa(ruta_imagen: str, area_minima: int = 800) -> dict:
+    """
+    Ejecuta el pipeline completo de la Fase 1 sobre una sola imagen:
+    carga -> segmentación triangular -> conversión CIELAB -> extracción
+    del canal a*.
+
+    Parámetros
+    ----------
+    ruta_imagen : str
+        Ruta a la imagen del dataset CP-Anemic.
+    area_minima : int
+        Área mínima del contorno para considerar válida la segmentación.
+
+    Retorna
+    -------
+    dict
+        Diccionario con todos los resultados intermedios y finales, listo
+        para pasarse a la Fase 2 (extracción de características
+        estadísticas) o para visualizarse/guardarse en disco. Claves:
+            - "nombre_archivo"
+            - "imagen_original"   (np.ndarray BGR)
+            - "mascara_roi"       (np.ndarray uint8, 0/255)
+            - "roi_segmentada"    (np.ndarray BGR, fondo negro)
+            - "canal_a_visual"    (np.ndarray uint8, escala de grises)
+            - "mapa_calor_a"      (np.ndarray BGR, colormap JET)
+            - "valores_a_roi"     (np.ndarray 1D uint8, para Fase 2)
+            - "media_a"           (float)
+            - "desviacion_a"      (float)
+    """
+    imagen_original = cargar_imagen(ruta_imagen)
+
+    mascara, roi_bgr = segmentar_roi_conjuntiva(
+        imagen_original, area_minima=area_minima
+    )
+
+    canal_a_visual, valores_a_roi = extraer_canal_a_cielab(roi_bgr, mascara)
+
+    # Mapa de calor para inspección visual rápida de los niveles de a*.
+    # cv2.COLORMAP_JET mapea valores bajos a tonos azules/fríos y valores
+    # altos a tonos rojos/cálidos, lo que facilita ver de un vistazo si
+    # la conjuntiva analizada luce "pálida" (predominio de azules/verdes)
+    # o "sana" (predominio de rojos).
+    mapa_calor = cv2.applyColorMap(canal_a_visual, cv2.COLORMAP_JET)
+    # Re-aplicamos la máscara para que el fondo del mapa de calor sea negro
+    # y no el color que JET asigna al valor 0.
+    mapa_calor = cv2.bitwise_and(mapa_calor, mapa_calor, mask=mascara)
+
+    resultados = {
+        "nombre_archivo": os.path.basename(ruta_imagen),
+        "imagen_original": imagen_original,
+        "mascara_roi": mascara,
+        "roi_segmentada": roi_bgr,
+        "canal_a_visual": canal_a_visual,
+        "mapa_calor_a": mapa_calor,
+        "valores_a_roi": valores_a_roi,
+        "media_a": float(np.mean(valores_a_roi)),
+        "desviacion_a": float(np.std(valores_a_roi)),
+    }
+
+    return resultados
+
+
+# ==============================================================================
+# 5. VISUALIZACIÓN Y GUARDADO DE RESULTADOS
+# ==============================================================================
+
+def mostrar_y_guardar_resultados(resultados: dict, directorio_salida: str = None):
+    """
+    Muestra en pantalla (cv2.imshow) las 3 vistas solicitadas para
+    verificación visual:
+        1. Imagen original.
+        2. ROI segmentada de la conjuntiva (fondo negro).
+        3. Mapa de calor del canal a* de esa ROI.
+
+    Si se indica `directorio_salida`, adicionalmente guarda cada imagen
+    con cv2.imwrite (útil en entornos sin interfaz gráfica, por ejemplo
+    servidores remotos o notebooks sin soporte de ventanas).
+
+    Parámetros
+    ----------
+    resultados : dict
+        Salida de `procesar_imagen_completa`.
+    directorio_salida : str, opcional
+        Carpeta donde guardar las imágenes resultantes en disco.
+    """
+    nombre = resultados["nombre_archivo"]
+
+    cv2.imshow(f"1. Original - {nombre}", resultados["imagen_original"])
+    cv2.imshow(f"2. ROI Conjuntiva (fondo negro) - {nombre}", resultados["roi_segmentada"])
+    cv2.imshow(f"3. Mapa de calor canal a* - {nombre}", resultados["mapa_calor_a"])
+
+    print(
+        f"[{nombre}] Media canal a* en ROI: {resultados['media_a']:.2f} "
+        f"| Desviación estándar: {resultados['desviacion_a']:.2f}"
+    )
+
+    if directorio_salida:
+        os.makedirs(directorio_salida, exist_ok=True)
+        base = os.path.splitext(nombre)[0]
+        cv2.imwrite(os.path.join(directorio_salida, f"{base}_1_original.png"),
+                    resultados["imagen_original"])
+        cv2.imwrite(os.path.join(directorio_salida, f"{base}_2_roi.png"),
+                    resultados["roi_segmentada"])
+        cv2.imwrite(os.path.join(directorio_salida, f"{base}_3_mapa_calor_a.png"),
+                    resultados["mapa_calor_a"])
+        cv2.imwrite(os.path.join(directorio_salida, f"{base}_4_mascara.png"),
+                    resultados["mascara_roi"])
+        print(f"[{nombre}] Imágenes guardadas en: {directorio_salida}")
+
+    print("Presione cualquier tecla sobre una ventana de imagen para continuar...")
+    cv2.waitKey(0)
+    cv2.destroyAllWindows()
+
+
+# ==============================================================================
+# BLOQUE DE PRUEBA / EJEMPLO DE USO
+# ==============================================================================
+
 if __name__ == "__main__":
-    construir_conjuntos_preprocesados()
+
+    # --------------------------------------------------------------------
+    # EJEMPLO A: procesamiento de UNA sola imagen de muestra
+    # --------------------------------------------------------------------
+    RUTA_IMAGEN_MUESTRA = "dataset/Eyes_defy_Anemia/muestra_001.jpg"  # <-- ajustar a su ruta real
+    DIRECTORIO_SALIDA = "resultados_fase1"
+
+    try:
+        resultados = procesar_imagen_completa(RUTA_IMAGEN_MUESTRA, area_minima=800)
+        mostrar_y_guardar_resultados(resultados, directorio_salida=DIRECTORIO_SALIDA)
+
+    except FileNotFoundError as error:
+        print(f"[ERROR] Archivo no encontrado: {error}")
+    except ValueError as error:
+        print(f"[ERROR] No se pudo procesar la imagen: {error}")
+
+    # --------------------------------------------------------------------
+    # EJEMPLO B: procesamiento por lotes de TODO el dataset
+    # --------------------------------------------------------------------
+    DIRECTORIO_DATASET = "dataset/Eyes_defy_Anemia"
+
+    try:
+        dataset = cargar_dataset(DIRECTORIO_DATASET)
+    except NotADirectoryError as error:
+        print(f"[ERROR] {error}")
+        dataset = []
+
+    resultados_dataset = []
+
+    for nombre_archivo, imagen in dataset:
+        ruta = os.path.join(DIRECTORIO_DATASET, nombre_archivo)
+        try:
+            resultado = procesar_imagen_completa(ruta, area_minima=800)
+            resultados_dataset.append(resultado)
+            # Para lotes grandes normalmente NO se usa cv2.imshow (bloquea
+            # la ejecución esperando una tecla); se recomienda solo guardar:
+            # mostrar_y_guardar_resultados(resultado, directorio_salida=DIRECTORIO_SALIDA)
+        except ValueError as error:
+            print(f"[AVISO] Imagen '{nombre_archivo}' descartada: {error}")
+
+    print(
+        f"\nSe procesaron correctamente {len(resultados_dataset)} de "
+        f"{len(dataset)} imágenes del dataset."
+    )
+
+    # A partir de aquí, `resultados_dataset` es la entrada directa de la
+    # Fase 2 (extracción de características estadísticas sobre
+    # `valores_a_roi` de cada imagen: media, desviación estándar, sesgo,
+    # curtosis, percentiles, etc., para luego construir un clasificador
+    # basado en reglas o umbrales -- sin ML/DL, conforme a la restricción
+    # del proyecto).
