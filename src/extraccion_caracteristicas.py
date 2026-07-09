@@ -487,7 +487,7 @@ def guardar_csv_caracteristicas(directorio_resultados_fase1: str,
     with open(ruta_csv, "w", newline="", encoding="utf-8") as archivo_csv:
         writer = csv.writer(archivo_csv)
         writer.writerow(
-            ["clase", "imagen", "ruta_original", "ruta_mascara", *extractor.NOMBRES_CARACTERISTICAS]
+            ["clase", "IMAGE_ID", "ruta_original", "ruta_mascara", *extractor.NOMBRES_CARACTERISTICAS]
         )
 
         procesadas = 0
