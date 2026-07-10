@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Detección de Anemia - RNA</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #f5f7fa;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+
+        .container {
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 4px 24px rgba(0, 0, 0, 0.08);
+            padding: 40px;
+            max-width: 520px;
+            width: 100%;
+        }
+
+        h1 {
+            font-size: 1.5rem;
+            color: #1a1a2e;
+            margin-bottom: 8px;
+            text-align: center;
+        }
+
+        .subtitle {
+            color: #6b7280;
+            font-size: 0.9rem;
+            text-align: center;
+            margin-bottom: 32px;
+        }
+
+        .upload-area {
+            border: 2px dashed #d1d5db;
+            border-radius: 12px;
+            padding: 40px 20px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.2s;
+            margin-bottom: 20px;
+        }
+
+        .upload-area:hover {
+            border-color: #6366f1;
+            background: #f8f7ff;
+        }
+
+        .upload-area.dragover {
+            border-color: #6366f1;
+            background: #eef2ff;
+        }
+
+        .upload-area.has-file {
+            border-color: #10b981;
+            background: #ecfdf5;
+        }
+
+        .upload-icon {
+            font-size: 2.5rem;
+            margin-bottom: 12px;
+        }
+
+        .upload-text {
+            color: #6b7280;
+            font-size: 0.9rem;
+        }
+
+        .upload-text strong {
+            color: #6366f1;
+        }
+
+        .file-name {
+            color: #10b981;
+            font-weight: 500;
+            margin-top: 8px;
+            font-size: 0.85rem;
+        }
+
+        #file-input {
+            display: none;
+        }
+
+        .btn {
+            width: 100%;
+            padding: 14px;
+            border: none;
+            border-radius: 10px;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .btn-primary {
+            background: #6366f1;
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: #4f46e5;
+        }
+
+        .btn-primary:disabled {
+            background: #c7c7cc;
+            cursor: not-allowed;
+        }
+
+        .loading {
+            display: none;
+            text-align: center;
+            padding: 20px;
+            color: #6b7280;
+        }
+
+        .loading.active {
+            display: block;
+        }
+
+        .spinner {
+            display: inline-block;
+            width: 24px;
+            height: 24px;
+            border: 3px solid #e5e7eb;
+            border-top: 3px solid #6366f1;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            margin-bottom: 8px;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .resultado {
+            display: none;
+            margin-top: 24px;
+            padding: 24px;
+            border-radius: 12px;
+            animation: fadeIn 0.3s ease;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(8px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .resultado.anemia {
+            background: #fef2f2;
+            border: 1px solid #fecaca;
+        }
+
+        .resultado.no-anemia {
+            background: #ecfdf5;
+            border: 1px solid #a7f3d0;
+        }
+
+        .resultado.error {
+            background: #fff7ed;
+            border: 1px solid #fed7aa;
+        }
+
+        .diagnostico {
+            font-size: 1.3rem;
+            font-weight: 700;
+            margin-bottom: 4px;
+        }
+
+        .resultado.anemia .diagnostico { color: #dc2626; }
+        .resultado.no-anemia .diagnostico { color: #059669; }
+        .resultado.error .diagnostico { color: #d97706; }
+
+        .hemoglobina {
+            font-size: 1.1rem;
+            color: #374151;
+            margin-bottom: 12px;
+        }
+
+        .hemoglobina span {
+            font-weight: 700;
+            font-size: 1.4rem;
+        }
+
+        .info-clinica {
+            font-size: 0.8rem;
+            color: #6b7280;
+            padding-top: 12px;
+            border-top: 1px solid rgba(0,0,0,0.06);
+        }
+
+        .preview-img {
+            max-width: 100%;
+            max-height: 200px;
+            border-radius: 8px;
+            margin-top: 12px;
+            display: none;
+        }
+
+        .aviso {
+            background: #fef3c7;
+            border: 1px solid #fde68a;
+            border-radius: 8px;
+            padding: 12px;
+            font-size: 0.8rem;
+            color: #92400e;
+            margin-bottom: 20px;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔬 Detección de Anemia</h1>
+        <p class="subtitle">Sube una imagen de la conjuntiva palpebral para estimar el nivel de hemoglobina</p>
+
+        {% if not modelo_disponible %}
+        <div class="aviso">
+            ⚠️ Modelo no disponible. Ejecuta <code>python main.py</code> primero para entrenar.
+        </div>
+        {% endif %}
+
+        <div class="upload-area" id="upload-area">
+            <div class="upload-icon">📷</div>
+            <p class="upload-text"><strong>Haz clic</strong> o arrastra una imagen aquí</p>
+            <p class="file-name" id="file-name"></p>
+            <img class="preview-img" id="preview-img" alt="Vista previa">
+        </div>
+
+        <input type="file" id="file-input" accept="image/png,image/jpeg,image/bmp">
+
+        <button class="btn btn-primary" id="btn-predecir" disabled>
+            Analizar imagen
+        </button>
+
+        <div class="loading" id="loading">
+            <div class="spinner"></div>
+            <p>Procesando imagen...</p>
+        </div>
+
+        <div class="resultado" id="resultado">
+            <p class="diagnostico" id="diagnostico"></p>
+            <p class="hemoglobina" id="hemoglobina"></p>
+            <p class="info-clinica" id="info-clinica"></p>
+        </div>
+    </div>
+
+    <script>
+        const uploadArea = document.getElementById('upload-area');
+        const fileInput = document.getElementById('file-input');
+        const btnPredecir = document.getElementById('btn-predecir');
+        const loading = document.getElementById('loading');
+        const resultado = document.getElementById('resultado');
+        const fileName = document.getElementById('file-name');
+        const previewImg = document.getElementById('preview-img');
+
+        let archivoSeleccionado = null;
+
+        // Click para seleccionar archivo
+        uploadArea.addEventListener('click', () => fileInput.click());
+
+        // Drag & drop
+        uploadArea.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            uploadArea.classList.add('dragover');
+        });
+
+        uploadArea.addEventListener('dragleave', () => {
+            uploadArea.classList.remove('dragover');
+        });
+
+        uploadArea.addEventListener('drop', (e) => {
+            e.preventDefault();
+            uploadArea.classList.remove('dragover');
+            const files = e.dataTransfer.files;
+            if (files.length > 0) seleccionarArchivo(files[0]);
+        });
+
+        // Input file change
+        fileInput.addEventListener('change', (e) => {
+            if (e.target.files.length > 0) seleccionarArchivo(e.target.files[0]);
+        });
+
+        function seleccionarArchivo(archivo) {
+            archivoSeleccionado = archivo;
+            fileName.textContent = archivo.name;
+            uploadArea.classList.add('has-file');
+            btnPredecir.disabled = false;
+
+            // Preview
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                previewImg.src = e.target.result;
+                previewImg.style.display = 'block';
+            };
+            reader.readAsDataURL(archivo);
+
+            // Ocultar resultado anterior
+            resultado.style.display = 'none';
+        }
+
+        // Enviar predicción
+        btnPredecir.addEventListener('click', async () => {
+            if (!archivoSeleccionado) return;
+
+            btnPredecir.disabled = true;
+            loading.classList.add('active');
+            resultado.style.display = 'none';
+
+            const formData = new FormData();
+            formData.append('imagen', archivoSeleccionado);
+
+            try {
+                const response = await fetch('/predecir', {
+                    method: 'POST',
+                    body: formData,
+                });
+
+                const data = await response.json();
+
+                if (data.error) {
+                    mostrarError(data.error);
+                } else {
+                    mostrarResultado(data);
+                }
+            } catch (err) {
+                mostrarError('Error de conexión con el servidor.');
+            } finally {
+                loading.classList.remove('active');
+                btnPredecir.disabled = false;
+            }
+        });
+
+        function mostrarResultado(data) {
+            const esAnemia = data.diagnostico === 'Anemia';
+
+            resultado.className = 'resultado ' + (esAnemia ? 'anemia' : 'no-anemia');
+            document.getElementById('diagnostico').textContent =
+                esAnemia ? '⚠️ Posible Anemia' : '✅ No Anemia';
+            document.getElementById('hemoglobina').innerHTML =
+                `Hemoglobina estimada: <span>${data.hemoglobina_estimada} g/dL</span>`;
+            document.getElementById('info-clinica').textContent =
+                `Umbral clínico OMS: Hb < ${data.umbral_clinico} g/dL → Anemia`;
+
+            resultado.style.display = 'block';
+        }
+
+        function mostrarError(mensaje) {
+            resultado.className = 'resultado error';
+            document.getElementById('diagnostico').textContent = '⚠️ Error';
+            document.getElementById('hemoglobina').textContent = mensaje;
+            document.getElementById('info-clinica').textContent = '';
+            resultado.style.display = 'block';
+        }
+    </script>
+</body>
+</html>

@@ -4,3 +4,5 @@ dataset/Cp-Anemic/Anemic
 dataset/Cp-Anemic/Non-anemic
 resultados_fase1/Anemic
 resultados_fase1/Non-anemic
+
+__pycache__/
