@@ -319,27 +319,28 @@ class PerceptronMultiCapa:
         rng = np.random.default_rng(semilla)
 
         # --- Inicialización He (Kaiming) para la capa oculta -------------
-        # Justificación matemática: al usar ReLU, aproximadamente la mitad
-        # de las neuronas quedan "apagadas" (salida 0) para cualquier
-        # entrada. La inicialización He escala los pesos por sqrt(2/n_in)
-        # para que la VARIANZA de las activaciones se mantenga
-        # aproximadamente constante capa a capa a pesar de esa pérdida de
-        # la mitad de las unidades, evitando que las activaciones se
-        # desvanezcan o exploten en redes con ReLU ("Dying ReLU").
         self.W1 = rng.standard_normal((n_entradas, n_ocultas)) * np.sqrt(2.0 / n_entradas)
         self.b1 = np.zeros((1, n_ocultas))
 
-        # --- Inicialización tipo Xavier/Glorot (escala controlada) -------
-        # para la capa de salida lineal. Al no tener no-linealidad en la
-        # salida, se usa sqrt(1/n_in) (variante "LeCun/Xavier" para
-        # activaciones lineales) en vez del factor 2 de He, que está
-        # pensado específicamente para compensar la pérdida de varianza
-        # introducida por ReLU.
+        # --- Inicialización Xavier/Glorot para la capa de salida ---------
         self.W2 = rng.standard_normal((n_ocultas, 1)) * np.sqrt(1.0 / n_ocultas)
         self.b2 = np.zeros((1, 1))
 
-        # Historial de la función de pérdida (MSE) por época, para poder
-        # inspeccionar la convergencia del entrenamiento.
+        # --- Variables del optimizador Adam ------------------------------
+        # Primer momento (promedio móvil del gradiente)
+        self.m_W1 = np.zeros_like(self.W1)
+        self.m_b1 = np.zeros_like(self.b1)
+        self.m_W2 = np.zeros_like(self.W2)
+        self.m_b2 = np.zeros_like(self.b2)
+        # Segundo momento (promedio móvil del gradiente al cuadrado)
+        self.v_W1 = np.zeros_like(self.W1)
+        self.v_b1 = np.zeros_like(self.b1)
+        self.v_W2 = np.zeros_like(self.W2)
+        self.v_b2 = np.zeros_like(self.b2)
+        # Contador de pasos (para corrección de sesgo)
+        self.t = 0
+
+        # Historial de la función de pérdida (MSE) por época.
         self.historial_perdida_train: List[float] = []
         self.historial_perdida_val: List[float] = []
 
@@ -392,71 +393,59 @@ class PerceptronMultiCapa:
     # BACKWARD PASS (BACKPROPAGATION) - DERIVADAS ANALÍTICAS
     # --------------------------------------------------------------------
     def backward(self, cache: Dict[str, np.ndarray], y_real: np.ndarray,
-                 tasa_aprendizaje: float) -> None:
+                 tasa_aprendizaje: float, beta1: float = 0.9,
+                 beta2: float = 0.999, epsilon: float = 1e-8,
+                 lambda_l2: float = 0.0) -> None:
         """
-        Calcula las derivadas parciales de la función de pérdida (MSE)
-        respecto a CADA parámetro de la red (W1, b1, W2, b2), aplicando
-        la regla de la cadena capa por capa (de salida hacia entrada), y
-        actualiza los parámetros mediante descenso de gradiente.
+        Backpropagation + actualización de pesos con Adam + regularización L2.
 
-        Derivación matemática paso a paso (n = número de muestras del lote):
-        -----------------------------------------------------------------
-        1) Pérdida:           L = (1/n) * sum( (Z2 - y)^2 )
-           Como la activación de salida es LINEAL (A2 = Z2), la derivada
-           de L respecto a la salida de la red Z2 es directamente:
-
-               dL/dZ2 = (2/n) * (Z2 - y)                       (n, 1)
-
-        2) La salida es Z2 = A1 @ W2 + b2. Aplicando la regla de la
-           cadena para cada parámetro de la capa de salida:
-
-               dL/dW2 = A1^T @ (dL/dZ2)                        (16, 1)
-               dL/db2 = sum_filas(dL/dZ2)                      (1, 1)
-
-        3) Para propagar el error hacia la capa oculta, derivamos
-           respecto a la activación A1:
-
-               dL/dA1 = (dL/dZ2) @ W2^T                        (n, 16)
-
-        4) Como A1 = ReLU(Z1), aplicamos la derivada de ReLU
-           (elemento a elemento, 1 donde Z1>0 y 0 donde Z1<=0):
-
-               dL/dZ1 = dL/dA1 * ReLU'(Z1)                     (n, 16)
-
-        5) Finalmente, como Z1 = X @ W1 + b1:
-
-               dL/dW1 = X^T @ (dL/dZ1)                         (12, 16)
-               dL/db1 = sum_filas(dL/dZ1)                      (1, 16)
-
-        6) Actualización de parámetros (Descenso de Gradiente):
-               W <- W - tasa_aprendizaje * dL/dW
-               b <- b - tasa_aprendizaje * dL/db
+        La regularización L2 agrega un término de penalización a los
+        gradientes: dW += lambda_l2 * W. Esto evita que los pesos crezcan
+        demasiado, reduciendo el sobreajuste.
         """
         X, Z1, A1, Z2 = cache["X"], cache["Z1"], cache["A1"], cache["Z2"]
         n_muestras = X.shape[0]
 
-        # --- Paso 1: gradiente de la pérdida respecto a la salida Z2 ----
-        dZ2 = (2.0 / n_muestras) * (Z2 - y_real)  # (n, 1)
+        # --- Cálculo de gradientes ---------------------------------------
+        dZ2 = (2.0 / n_muestras) * (Z2 - y_real)
+        dW2 = A1.T @ dZ2 + lambda_l2 * self.W2  # L2 sobre W2
+        db2 = np.sum(dZ2, axis=0, keepdims=True)
 
-        # --- Paso 2: gradientes de la capa de salida (W2, b2) -----------
-        dW2 = A1.T @ dZ2                          # (16, 1)
-        db2 = np.sum(dZ2, axis=0, keepdims=True)  # (1, 1)
+        dA1 = dZ2 @ self.W2.T
+        dZ1 = dA1 * self._relu_derivada(Z1)
+        dW1 = X.T @ dZ1 + lambda_l2 * self.W1   # L2 sobre W1
+        db1 = np.sum(dZ1, axis=0, keepdims=True)
 
-        # --- Paso 3: propagación del error hacia la capa oculta ---------
-        dA1 = dZ2 @ self.W2.T                     # (n, 16)
+        # --- Actualización con Adam --------------------------------------
+        self.t += 1
 
-        # --- Paso 4: aplicar derivada de ReLU ----------------------------
-        dZ1 = dA1 * self._relu_derivada(Z1)       # (n, 16)
+        # W1
+        self.m_W1 = beta1 * self.m_W1 + (1 - beta1) * dW1
+        self.v_W1 = beta2 * self.v_W1 + (1 - beta2) * (dW1 ** 2)
+        m_hat = self.m_W1 / (1 - beta1 ** self.t)
+        v_hat = self.v_W1 / (1 - beta2 ** self.t)
+        self.W1 -= tasa_aprendizaje * m_hat / (np.sqrt(v_hat) + epsilon)
 
-        # --- Paso 5: gradientes de la capa oculta (W1, b1) ---------------
-        dW1 = X.T @ dZ1                            # (12, 16)
-        db1 = np.sum(dZ1, axis=0, keepdims=True)   # (1, 16)
+        # b1
+        self.m_b1 = beta1 * self.m_b1 + (1 - beta1) * db1
+        self.v_b1 = beta2 * self.v_b1 + (1 - beta2) * (db1 ** 2)
+        m_hat = self.m_b1 / (1 - beta1 ** self.t)
+        v_hat = self.v_b1 / (1 - beta2 ** self.t)
+        self.b1 -= tasa_aprendizaje * m_hat / (np.sqrt(v_hat) + epsilon)
 
-        # --- Paso 6: actualización de parámetros (SGD) --------------------
-        self.W2 -= tasa_aprendizaje * dW2
-        self.b2 -= tasa_aprendizaje * db2
-        self.W1 -= tasa_aprendizaje * dW1
-        self.b1 -= tasa_aprendizaje * db1
+        # W2
+        self.m_W2 = beta1 * self.m_W2 + (1 - beta1) * dW2
+        self.v_W2 = beta2 * self.v_W2 + (1 - beta2) * (dW2 ** 2)
+        m_hat = self.m_W2 / (1 - beta1 ** self.t)
+        v_hat = self.v_W2 / (1 - beta2 ** self.t)
+        self.W2 -= tasa_aprendizaje * m_hat / (np.sqrt(v_hat) + epsilon)
+
+        # b2
+        self.m_b2 = beta1 * self.m_b2 + (1 - beta1) * db2
+        self.v_b2 = beta2 * self.v_b2 + (1 - beta2) * (db2 ** 2)
+        m_hat = self.m_b2 / (1 - beta1 ** self.t)
+        v_hat = self.v_b2 / (1 - beta2 ** self.t)
+        self.b2 -= tasa_aprendizaje * m_hat / (np.sqrt(v_hat) + epsilon)
 
     # --------------------------------------------------------------------
     # ENTRENAMIENTO: SGD POR MINI-LOTES

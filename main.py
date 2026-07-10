@@ -78,8 +78,8 @@ def main() -> None:
     validador = ValidadorCruzado(k_pliegues=5, semilla=42)
     mse_pliegues = validador.ejecutar(
         X_dev, y_dev,
-        n_entradas=12, n_ocultas=32,
-        epocas=500, tasa_aprendizaje=0.0005, tamano_lote=16,
+        n_entradas=12, n_ocultas=64,
+        epocas=300, tasa_aprendizaje=0.001, tamano_lote=16,
         semilla_modelo=42, verbose=True,
     )
 
@@ -97,11 +97,11 @@ def main() -> None:
     X_dev_std = escalador_global.ajustar_transformar(X_dev)
     X_test_std = escalador_global.transformar(X_test)
 
-    modelo_final = PerceptronMultiCapa(n_entradas=12, n_ocultas=32, semilla=42)
+    modelo_final = PerceptronMultiCapa(n_entradas=12, n_ocultas=64, semilla=42)
     modelo_final.entrenar(
         X_dev_std, y_dev,
-        epocas=1000, tasa_aprendizaje=0.0005, tamano_lote=16,
-        semilla=42, verbose=True, imprimir_cada=100,
+        epocas=500, tasa_aprendizaje=0.001, tamano_lote=16,
+        semilla=42, verbose=True, imprimir_cada=50,
     )
 
     # ------------------------------------------------------------------
@@ -156,7 +156,7 @@ def cargar_modelo(ruta_modelo: str = None):
 
     datos = np.load(ruta_modelo)
 
-    modelo = PerceptronMultiCapa(n_entradas=12, n_ocultas=32)
+    modelo = PerceptronMultiCapa(n_entradas=12, n_ocultas=64)
     modelo.W1 = datos["W1"]
     modelo.b1 = datos["b1"]
     modelo.W2 = datos["W2"]
